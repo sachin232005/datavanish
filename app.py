@@ -13,7 +13,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'e2ee_messenger_secret'
 
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://neondb_owner:npg_T3Gy0zKZIDPX@ep-lively-flower-a4ahr0gx-pooler.us-east-1.aws.neon.tech/datavanish_db?sslmode=require')
 
