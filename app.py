@@ -39,11 +39,10 @@ def home():
 def upload():
     data = request.json.get('data')
     if not data: return jsonify({"error": "No data"}), 400
-    expiry = datetime.now() + timedelta(minutes=10)
-    
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, %s, %s) RETURNING id", (data, expiry, 1))
+    # 🔹 Hand off all Time Management to AWS native clocks to prevent standard Timezone Drift bugs!
+    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '10 minutes', %s) RETURNING id", (data, 1))
     new_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
@@ -88,9 +87,9 @@ def handle_message(data):
             conn = get_db()
             curr = conn.cursor()
             ttl_seconds = int(data.get('ttl_rule', 30))
-            expiry = datetime.now() + timedelta(seconds=ttl_seconds)
             payload_string = f"[From {data.get('sender_uid')} To {receiver_uid}] => Cipher: {data.get('encrypted_payload', '')}"
-            curr.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, %s, %s)", (payload_string, expiry, 9999))
+            # 🔹 Offload dynamic database timers purely to Postgres Internal Epoch limits native tracking!
+            curr.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + %s::interval, %s)", (payload_string, f'{ttl_seconds} seconds', 9999))
             conn.commit()
             curr.close()
             conn.close()
