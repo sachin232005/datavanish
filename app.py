@@ -115,8 +115,9 @@ def view_db():
         curr.close()
         conn.close()
         
-        html = "<html><head><script>setInterval(() => { location.reload(); }, 10000);</script><style>body{background:#121212;color:#10b981;font-family:monospace;padding:20px;}</style></head><body>"
-        html += "<h2>Server Data Vault (Live Auto-Updating every 10 seconds...)</h2><ul>"
+        html = "<html><head><style>body{background:#121212;color:#10b981;font-family:monospace;padding:20px;} .btn{background:#10b981;color:#121212;padding:10px 20px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;font-size:16px;margin-bottom:20px;}</style></head><body>"
+        html += "<h2>Server Data Vault (Live Security Monitor)</h2>"
+        html += "<button class='btn' onclick='location.reload()'>🔄 Manually Refresh Database</button><ul>"
         for r in rows:
             html += f"<li><b style='color:#fff'>ID {r[0]} | Expires strictly at {r[2]}</b><br><code style='color:#aaa'>{r[1]}</code></li><hr style='border:1px solid #333'>"
         html += "</ul><p style='color:#ef4444'><i>Notice how the server only stores mathematically scrambled ciphertext. After exact expiration laws triggers, watch it mathematically vanish from this page permanently!</i></p></body></html>"
