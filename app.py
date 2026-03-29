@@ -91,13 +91,21 @@ def handle_message(data):
             curr = conn.cursor()
             ttl_seconds = int(data.get('ttl_rule', 30))
             payload_string = f"[From {data.get('sender_uid')} To {receiver_uid}] => Cipher: {data.get('encrypted_payload', '')}"
-            # 🔹 Offload dynamic database timers purely to Postgres Internal Epoch limits native tracking!
-            curr.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + %s::interval, %s)", (payload_string, f'{ttl_seconds} seconds', 9999))
+            
+            # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
+            curr.execute(
+                "INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s)", 
+                (payload_string, ttl_seconds, 9999)
+            )
+            
             conn.commit()
+            print("✅ Message mathematically safely stored in AWS DB!!")
             curr.close()
             conn.close()
         except Exception as e:
-            print("DB logging error natively:", e)
+            import traceback
+            print("❌ FATAL DB LOGGING ERROR:", e)
+            traceback.print_exc()
 
 @app.route('/favicon.ico')
 def favicon():
