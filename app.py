@@ -20,6 +20,19 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://neondb_owner:npg_T3Gy0zKZIDPX@ep-lively-flower-a4ahr0gx-pooler.us-east-1.aws.neon.tech/datavanish_db?sslmode=require')
 conn = psycopg2.connect(DATABASE_URL)
 
+# 🔹 AUTO-INITIALIZATION: Automatically construct the missing Neon Database Tables mathematically so we NEVER get a 500 Crash Error!
+init_cur = conn.cursor()
+init_cur.execute("""
+    CREATE TABLE IF NOT EXISTS secure_data (
+        id SERIAL PRIMARY KEY,
+        data TEXT,
+        expiry_time TIMESTAMP,
+        access_count INTEGER
+    );
+""")
+conn.commit()
+init_cur.close()
+
 cur = conn.cursor()
 
 
