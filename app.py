@@ -81,31 +81,42 @@ def get_data(file_id):
 def on_join(data):
     join_room(data['uid'])
 
+def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
+    try:
+        conn = get_db()
+        curr = conn.cursor()
+        payload_string = f"[From {sender_uid} To {receiver_uid}] => Cipher: {payload}"
+        
+        # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
+        curr.execute(
+            "INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s)", 
+            (payload_string, ttl_seconds, 9999)
+        )
+        
+        conn.commit()
+        print("✅ Message mathematically safely stored in AWS DB!!")
+        curr.close()
+        conn.close()
+    except Exception as e:
+        import traceback
+        print("❌ FATAL DB LOGGING ERROR:", e)
+        traceback.print_exc()
+
 @socketio.on('send_message')
 def handle_message(data):
     receiver_uid = data.get('receiver_uid')
     if receiver_uid:
         emit('receive_message', data, room=receiver_uid)
-        try:
-            conn = get_db()
-            curr = conn.cursor()
-            ttl_seconds = int(data.get('ttl_rule', 30))
-            payload_string = f"[From {data.get('sender_uid')} To {receiver_uid}] => Cipher: {data.get('encrypted_payload', '')}"
-            
-            # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
-            curr.execute(
-                "INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s)", 
-                (payload_string, ttl_seconds, 9999)
-            )
-            
-            conn.commit()
-            print("✅ Message mathematically safely stored in AWS DB!!")
-            curr.close()
-            conn.close()
-        except Exception as e:
-            import traceback
-            print("❌ FATAL DB LOGGING ERROR:", e)
-            traceback.print_exc()
+        
+        # Gevent event loops freeze completely when using synchronous C-Extensions like psycopg2.
+        # We MUST spin off database inserts directly into a SocketIO background task to prevent client disconnections!
+        socketio.start_background_task(
+            save_message_to_db, 
+            data.get('sender_uid'), 
+            receiver_uid, 
+            data.get('encrypted_payload', ''),
+            int(data.get('ttl_rule', 30))
+        )
 
 @app.route('/favicon.ico')
 def favicon():
