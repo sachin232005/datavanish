@@ -97,6 +97,10 @@ def get_conversations(username):
     conn = get_db()
     cur = conn.cursor()
 
+    # 🔹 Auto-vanish naturally expired text data from the cloud
+    cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
+    conn.commit()
+
     cur.execute("""
         SELECT DISTINCT 
             CASE 
@@ -120,6 +124,10 @@ def get_conversations(username):
 def get_messages(user1, user2):
     conn = get_db()
     cur = conn.cursor()
+
+    # 🔹 Auto-vanish naturally expired text data from the cloud
+    cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
+    conn.commit()
 
     cur.execute("""
         SELECT data, sender, receiver, id FROM secure_data
