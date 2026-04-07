@@ -1,4 +1,4 @@
-from gevent import monkey
+rom gevent import monkey
 monkey.patch_all()
 
 from flask import Flask, request, jsonify
@@ -29,6 +29,15 @@ def get_db():
             expiry_time TIMESTAMP,
             access_count INTEGER
         );
+        
+        ALTER TABLE secure_data ADD COLUMN IF NOT EXISTS sender TEXT;
+        ALTER TABLE secure_data ADD COLUMN IF NOT EXISTS receiver TEXT;
+
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE,
+            password TEXT
+        );
     """)
     conn.commit()
     init_cur.close()
@@ -37,6 +46,93 @@ def get_db():
 @app.route('/')
 def home():
     return "Flask Server is Running ✅"
+
+@app.route('/signup', methods=['POST'])
+def signup():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"error": "Missing fields"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, password))
+        conn.commit()
+        return jsonify({"message": "User created"})
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        return jsonify({"error": "User exists"}), 400
+    except Exception as e:
+        return jsonify({"error": "Error creating user"}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
+    user = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if user:
+        return jsonify({"message": "Login success", "uid": username})
+    else:
+        return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route('/conversations/<username>')
+def get_conversations(username):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT DISTINCT 
+            CASE 
+                WHEN sender = %s THEN receiver 
+                ELSE sender 
+            END AS user_alias,
+            MAX(expiry_time) 
+        FROM secure_data
+        WHERE sender = %s OR receiver = %s
+        GROUP BY user_alias
+    """, (username, username, username))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    result = [{"user": r[0], "latest_activity": r[1]} for r in rows if r[0]]
+    return jsonify(result)
+
+@app.route('/messages/<user1>/<user2>')
+def get_messages(user1, user2):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT data, sender, receiver, id FROM secure_data
+        WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+        ORDER BY id ASC
+    """, (user1, user2, user2, user1))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    result = [{"text": r[0], "sender": r[1], "receiver": r[2], "id": r[3]} for r in rows]
+    return jsonify(result)
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -71,7 +167,12 @@ def get_data(file_id):
         cur.close(); conn.close()
         return jsonify({"error": "Data mathematically vanished forever."}), 403
 
-    cur.execute("UPDATE secure_data SET access_count = access_count - 1 WHERE id=%s", (file_id,))
+    # Safely immediately vanish data if it is the final authorized read!
+    if access == 1:
+        cur.execute("DELETE FROM secure_data WHERE id=%s", (file_id,))
+    else:
+        cur.execute("UPDATE secure_data SET access_count = access_count - 1 WHERE id=%s", (file_id,))
+    
     conn.commit()
     cur.close(); conn.close()
 
@@ -85,12 +186,11 @@ def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
     try:
         conn = get_db()
         curr = conn.cursor()
-        payload_string = f"[From {sender_uid} To {receiver_uid}] => Cipher: {payload}"
         
         # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
         curr.execute(
-            "INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s)", 
-            (payload_string, ttl_seconds, 9999)
+            "INSERT INTO secure_data (data, expiry_time, access_count, sender, receiver) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s, %s, %s)", 
+            (payload, ttl_seconds, 9999, sender_uid, receiver_uid)
         )
         
         conn.commit()
@@ -129,16 +229,28 @@ def view_db():
         curr = conn.cursor()
         curr.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
         conn.commit()
-        curr.execute("SELECT id, data, expiry_time FROM secure_data ORDER BY id DESC LIMIT 50")
+        curr.execute("SELECT id, data, expiry_time, sender, receiver FROM secure_data ORDER BY id DESC LIMIT 50")
         rows = curr.fetchall()
+        
+        curr.execute("SELECT id, username FROM users ORDER BY id DESC LIMIT 50")
+        users = curr.fetchall()
+
         curr.close()
         conn.close()
         
         html = "<html><head><style>body{background:#121212;color:#10b981;font-family:monospace;padding:20px;} .btn{background:#10b981;color:#121212;padding:10px 20px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;font-size:16px;margin-bottom:20px;}</style></head><body>"
         html += "<h2>Server Data Vault (Live Security Monitor)</h2>"
-        html += "<button class='btn' onclick='location.reload()'>🔄 Manually Refresh Database</button><ul>"
+        html += "<button class='btn' onclick='location.reload()'>🔄 Manually Refresh Database</button>"
+        
+        html += "<h3>Registered Accounts</h3><ul>"
+        if len(users) == 0: html += "<li style='color:#888'>No users registered yet.</li>"
+        for u in users:
+            html += f"<li><b style='color:#3b82f6'>User ID {u[0]} | @{u[1]}</b></li>"
+        html += "</ul><hr style='border:1px solid #333'>"
+
+        html += "<h3>Stored Encrypted Payloads</h3><ul>"
         for r in rows:
-            html += f"<li><b style='color:#fff'>ID {r[0]} | Expires strictly at {r[2]}</b><br><code style='color:#aaa'>{r[1]}</code></li><hr style='border:1px solid #333'>"
+            html += f"<li><b style='color:#fff'>ID {r[0]} | {r[3] or 'SYS'} &rarr; {r[4] or 'SYS'} | Expires at {r[2]}</b><br><code style='color:#aaa'>{r[1]}</code></li><hr style='border:1px solid #333'>"
         html += "</ul><p style='color:#ef4444'><i>Notice how the server only stores mathematically scrambled ciphertext. After exact expiration laws triggers, watch it mathematically vanish from this page permanently!</i></p></body></html>"
         return html
     except Exception as e:
