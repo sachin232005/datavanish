@@ -149,7 +149,7 @@ def upload():
     conn = get_db()
     cur = conn.cursor()
     # 🔹 Hand off all Time Management to AWS native clocks to prevent standard Timezone Drift bugs!
-    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '10 minutes', %s) RETURNING id", (data, 1))
+    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '1 minute', %s) RETURNING id", (data, 1))
     new_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
