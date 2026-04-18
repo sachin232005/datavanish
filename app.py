@@ -129,6 +129,16 @@ def get_messages(user1, user2):
     cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
     conn.commit()
 
+    # 🔹 [OFFLINE DELIVERY & VANISH ON READ]
+    # If the receiver is finally fetching messages that have been sitting offline...
+    # We trigger the physical vanishing protocol (30 seconds remaining) exactly when they look at it!
+    cur.execute("""
+        UPDATE secure_data 
+        SET expiry_time = NOW() + INTERVAL '30 seconds'
+        WHERE receiver = %s AND sender = %s AND expiry_time > NOW() + INTERVAL '1 minute'
+    """, (user1, user2))
+    conn.commit()
+
     cur.execute("""
         SELECT data, sender, receiver, id FROM secure_data
         WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
