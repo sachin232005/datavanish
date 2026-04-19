@@ -243,9 +243,23 @@ def get_data(file_id):
 
     return jsonify({"data": data, "remaining_access": access - 1})
 
+@app.route('/web')
+def web_portal():
+    return send_from_directory('static', 'web.html')
+
 @socketio.on('join')
 def on_join(data):
     join_room(data['uid'])
+
+@app.route('/link_device', methods=['POST'])
+def link_device_api():
+    data = request.json
+    web_sid = data.get('web_sid')
+    if web_sid:
+        print(f"🔗 Relaying secure credentials via REST to Web Session: {web_sid}")
+        socketio.emit('device_linked', {"uid": data.get('uid'), "key": data.get('key')}, room=web_sid)
+        return jsonify({"message": "Device linked."}), 200
+    return jsonify({"error": "Missing SID."}), 400
 
 def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
     try:
