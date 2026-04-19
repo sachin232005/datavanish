@@ -1,3 +1,4 @@
+# 🔹 Core Gevent Hack: Force python networking natively into async memory so Gunicorn cloud servers NEVER crash from Socket Timeout!
 from gevent import monkey
 monkey.patch_all()
 
@@ -285,6 +286,30 @@ def handle_message(data):
             data.get('encrypted_payload', ''),
             int(data.get('ttl_rule', 30))
         )
+
+@socketio.on('delete_for_everyone')
+def handle_delete_everyone(data):
+    encrypted_payload = data.get('encrypted_payload')
+    receiver_uid = data.get('receiver_uid')
+    file_id = data.get('file_id')
+    
+    if receiver_uid:
+        emit('message_deleted', {'encrypted_payload': encrypted_payload}, room=receiver_uid)
+        
+    def execute_wipe():
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            if encrypted_payload:
+                cur.execute("DELETE FROM secure_data WHERE data = %s", (encrypted_payload,))
+            if file_id:
+                cur.execute("DELETE FROM secure_data WHERE id = %s", (file_id,))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except: pass
+
+    socketio.start_background_task(execute_wipe)
 
 @app.route('/favicon.ico')
 def favicon():
