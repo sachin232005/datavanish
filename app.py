@@ -206,7 +206,8 @@ def upload():
     conn = get_db()
     cur = conn.cursor()
     # 🔹 Hand off all Time Management to AWS native clocks to prevent standard Timezone Drift bugs!
-    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '1 minute', %s) RETURNING id", (data, 1))
+    # 🔹 Changed from '1 minute' to '24 hours' so offline users have time to fetch their encrypted attachments!
+    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '24 hours', %s) RETURNING id", (data, 1))
     new_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
