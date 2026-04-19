@@ -152,6 +152,24 @@ def get_messages(user1, user2):
     result = [{"text": r[0], "sender": r[1], "receiver": r[2], "id": r[3]} for r in rows]
     return jsonify(result)
 
+@app.route('/delete_chat/<user1>/<user2>', methods=['DELETE'])
+def delete_chat(user1, user2):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            DELETE FROM secure_data 
+            WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+        """, (user1, user2, user2, user1))
+        conn.commit()
+        return jsonify({"message": "Chat wiped permanently."}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
 @app.route('/upload', methods=['POST'])
 def upload():
     data = request.json.get('data')
