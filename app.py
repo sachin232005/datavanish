@@ -1,4 +1,3 @@
-# 🔹 Core Gevent Hack: Force python networking natively into async memory so Gunicorn cloud servers NEVER crash from Socket Timeout!
 from gevent import monkey
 monkey.patch_all()
 
@@ -263,6 +262,13 @@ def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
         import traceback
         print("[DB-ERROR] FATAL DB LOGGING ERROR:", e)
         traceback.print_exc()
+
+@socketio.on('join')
+def handle_join(data):
+    uid = data.get('uid')
+    if uid:
+        join_room(uid)
+        print(f"[Socket] User {uid} securely joined real-time socket room.")
 
 @socketio.on('send_message')
 def handle_message(data):
