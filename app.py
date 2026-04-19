@@ -1,3 +1,4 @@
+# 🔹 Core Gevent Hack: Force python networking natively into async memory so Gunicorn cloud servers NEVER crash from Socket Timeout!
 from gevent import monkey
 monkey.patch_all()
 
@@ -164,6 +165,34 @@ def delete_chat(user1, user2):
         conn.commit()
         return jsonify({"message": "Chat wiped permanently."}), 200
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route('/delete_account', methods=['DELETE'])
+def delete_account():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"error": "Missing fields"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
+        if not cur.fetchone():
+            return jsonify({"error": "Unauthorized"}), 401
+
+        cur.execute("DELETE FROM secure_data WHERE sender=%s OR receiver=%s", (username, username))
+        cur.execute("DELETE FROM users WHERE username=%s AND password=%s", (username, password))
+        conn.commit()
+        return jsonify({"message": "Account sanitized and destroyed."}), 200
+    except Exception as e:
+        conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         cur.close()
