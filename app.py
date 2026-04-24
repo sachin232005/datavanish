@@ -1,4 +1,3 @@
-# 🔹 Core Gevent Hack: Force python networking natively into async memory so Gunicorn cloud servers NEVER crash from Socket Timeout!
 from gevent import monkey
 monkey.patch_all()
 
@@ -9,6 +8,8 @@ import psycopg2
 import os
 from datetime import datetime, timedelta
 from flask import send_from_directory
+import urllib.request
+import json
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'e2ee_messenger_secret'
@@ -39,6 +40,7 @@ def get_db():
             username TEXT UNIQUE,
             password TEXT
         );
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
     """)
     conn.commit()
     init_cur.close()
@@ -92,6 +94,23 @@ def login():
         return jsonify({"message": "Login success", "uid": username})
     else:
         return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route('/update_token', methods=['POST'])
+def update_token():
+    data = request.json
+    username = data.get('username')
+    push_token = data.get('push_token')
+    
+    if not username or not push_token:
+        return jsonify({"error": "Missing fields"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET push_token=%s WHERE username=%s", (push_token, username))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": "Token updated"})
 
 @app.route('/conversations/<username>')
 def get_conversations(username):
@@ -274,6 +293,7 @@ def handle_join(data):
 @socketio.on('send_message')
 def handle_message(data):
     receiver_uid = data.get('receiver_uid')
+    sender_uid = data.get('sender_uid')
     if receiver_uid:
         emit('receive_message', data, room=receiver_uid)
         
@@ -281,11 +301,38 @@ def handle_message(data):
         # We MUST spin off database inserts directly into a SocketIO background task to prevent client disconnections!
         socketio.start_background_task(
             save_message_to_db, 
-            data.get('sender_uid'), 
+            sender_uid, 
             receiver_uid, 
             data.get('encrypted_payload', ''),
             int(data.get('ttl_rule', 30))
         )
+
+        def trigger_push():
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT push_token FROM users WHERE username=%s", (receiver_uid,))
+                user_row = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if user_row and user_row[0]:
+                    message = {
+                        'to': user_row[0],
+                        'sound': 'default',
+                        'title': f"🔒 Secure Msg | {sender_uid}",
+                        'body': "New encrypted payload received. Tap to decrypt in Vault."
+                    }
+                    req = urllib.request.Request(
+                        'https://exp.host/--/api/v2/push/send',
+                        data=json.dumps(message).encode('utf-8'),
+                        headers={'Accept': 'application/json', 'Content-Type': 'application/json'}
+                    )
+                    urllib.request.urlopen(req, timeout=5)
+            except Exception as e:
+                pass
+                
+        socketio.start_background_task(trigger_push)
 
 @socketio.on('delete_for_everyone')
 def handle_delete_everyone(data):
