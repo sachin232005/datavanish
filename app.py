@@ -39,13 +39,17 @@ def get_db():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE,
-            email TEXT UNIQUE,
-            phone TEXT UNIQUE,
-            password TEXT,
-            otp_code TEXT,
-            otp_expiry TIMESTAMP,
-            push_token TEXT
+            password TEXT
         );
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_code TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_expiry TIMESTAMP;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
+
+        -- Ensure uniqueness constraints if not present (optional but recommended)
+        -- Note: Postgres doesn't support 'ADD COLUMN IF NOT EXISTS ... UNIQUE' in one go easily for existing tables without risks, 
+        -- so we'll just add the columns and handle uniqueness in the app or via separate SQL if needed.
     """)
     conn.commit()
     init_cur.close()
