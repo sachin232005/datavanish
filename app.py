@@ -402,11 +402,14 @@ def handle_message(data):
                 conn.close()
                 
                 if user_row and user_row[0]:
+                    # 🔹 WhatsApp Style: Show Sender Name as Title
+                    display_sender = sender_uid.capitalize()
                     message = {
                         'to': user_row[0],
                         'sound': 'default',
-                        'title': f"🔒 Secure Msg | {sender_uid}",
-                        'body': "New encrypted payload received. Tap to decrypt in Vault."
+                        'title': f"{display_sender}",
+                        'body': f"Sent you a secure message. Tap to decrypt.",
+                        'data': {'sender_uid': sender_uid} # Deep linking context
                     }
                     req = urllib.request.Request(
                         'https://exp.host/--/api/v2/push/send',
