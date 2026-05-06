@@ -1,3 +1,4 @@
+# 🔹 Core Gevent Hack: Force python networking natively into async memory so Gunicorn cloud servers NEVER crash from Socket Timeout!
 from gevent import monkey
 monkey.patch_all()
 
@@ -38,9 +39,13 @@ def get_db():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE,
-            password TEXT
+            email TEXT UNIQUE,
+            phone TEXT UNIQUE,
+            password TEXT,
+            otp_code TEXT,
+            otp_expiry TIMESTAMP,
+            push_token TEXT
         );
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
     """)
     conn.commit()
     init_cur.close()
@@ -75,6 +80,86 @@ def signup():
         cur.close()
         conn.close()
 
+@app.route('/request_otp', methods=['POST'])
+def request_otp():
+    import random
+    data = request.json
+    identifier = data.get('identifier', '').strip().lower()
+    
+    if not identifier:
+        return jsonify({"error": "Identifier required"}), 400
+
+    # Determine if email or phone
+    is_email = '@' in identifier
+    
+    otp = str(random.randint(100000, 999999))
+    expiry = datetime.now() + timedelta(minutes=5)
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        # Check if user exists, if not create a placeholder
+        cur.execute("SELECT id FROM users WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
+        user = cur.fetchone()
+        
+        if not user:
+            # Create user if doesn't exist
+            if is_email:
+                cur.execute("INSERT INTO users (username, email, otp_code, otp_expiry) VALUES (%s, %s, %s, %s)", (identifier, identifier, otp, expiry))
+            else:
+                cur.execute("INSERT INTO users (username, phone, otp_code, otp_expiry) VALUES (%s, %s, %s, %s)", (identifier, identifier, otp, expiry))
+        else:
+            cur.execute("UPDATE users SET otp_code=%s, otp_expiry=%s WHERE id=%s", (otp, expiry, user[0]))
+        
+        conn.commit()
+        
+        # 🔹 MOCK SENDING (Log to console and return in response for demo)
+        print(f"DEBUG: Sending OTP {otp} to {identifier}")
+        
+        return jsonify({
+            "message": f"OTP sent to {identifier}",
+            "type": "email" if is_email else "phone",
+            "debug_otp": otp # REMOVE THIS IN PRODUCTION
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route('/verify_otp', methods=['POST'])
+def verify_otp():
+    data = request.json
+    identifier = data.get('identifier', '').strip().lower()
+    otp = data.get('otp', '').strip()
+
+    if not identifier or not otp:
+        return jsonify({"error": "Identifier and OTP required"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT username, otp_code, otp_expiry FROM users WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
+    user = cur.fetchone()
+
+    if not user:
+        cur.close(); conn.close()
+        return jsonify({"error": "User not found"}), 404
+
+    username, stored_otp, expiry = user
+
+    if stored_otp == otp and datetime.now() < expiry:
+        # Clear OTP after success
+        cur.execute("UPDATE users SET otp_code=NULL, otp_expiry=NULL WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
+        conn.commit()
+        cur.close(); conn.close()
+        return jsonify({"message": "Login success", "uid": username})
+    else:
+        cur.close(); conn.close()
+        return jsonify({"error": "Invalid or expired OTP"}), 401
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -84,7 +169,7 @@ def login():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
+    cur.execute("SELECT * FROM users WHERE (username=%s OR email=%s OR phone=%s) AND password=%s", (username, username, username, password))
     user = cur.fetchone()
 
     cur.close()
