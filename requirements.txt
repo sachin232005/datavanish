@@ -5,3 +5,5 @@ psycopg2-binary
 gevent
 gevent-websocket
 gunicorn
+python-dotenv
+twilio
