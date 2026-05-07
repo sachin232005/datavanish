@@ -11,6 +11,26 @@ from datetime import datetime, timedelta
 from flask import send_from_directory
 import urllib.request
 import json
+import random
+import smtplib
+from email.mime.text import MIMEText
+from twilio.rest import Client
+from dotenv import load_dotenv
+
+load_dotenv() # Load keys from .env if present
+
+# 🔹 OTP Configuration (Provide these in your Environment Variables or .env file)
+TWILIO_SID = os.environ.get('TWILIO_SID', 'ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', 'your_auth_token')
+TWILIO_PHONE = os.environ.get('TWILIO_PHONE', '+1234567890')
+
+EMAIL_SENDER = os.environ.get('EMAIL_SENDER', 'your_email@gmail.com')
+EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', 'your_app_password') # Use App Password for Gmail
+SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
+try:
+    SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
+except ValueError:
+    SMTP_PORT = 587
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'e2ee_messenger_secret'
@@ -61,7 +81,7 @@ def home():
 
 @app.route('/signup', methods=['POST'])
 def signup():
-    data = request.json
+    data = request.json or {}
     username = data.get('username')
     password = data.get('password')
 
@@ -84,10 +104,38 @@ def signup():
         cur.close()
         conn.close()
 
+def send_otp_via_email(email, otp):
+    try:
+        msg = MIMEText(f"Your Data Vanish OTP code is: {otp}\n\nThis code will expire in 5 minutes.")
+        msg['Subject'] = 'Secure Login OTP'
+        msg['From'] = EMAIL_SENDER
+        msg['To'] = email
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"[Backend Error] Failed to send email: {e}")
+        return False
+
+def send_otp_via_sms(phone, otp):
+    try:
+        client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+        message = client.messages.create(
+            body=f"Your Data Vanish OTP code is: {otp}. Valid for 5 mins.",
+            from_=TWILIO_PHONE,
+            to=phone
+        )
+        return True
+    except Exception as e:
+        print(f"[Backend Error] Failed to send SMS: {e}")
+        return False
+
 @app.route('/request_otp', methods=['POST'])
 def request_otp():
-    import random
-    data = request.json
+    data = request.json or {}
     identifier = data.get('identifier', '').strip().lower()
     
     if not identifier:
@@ -118,13 +166,23 @@ def request_otp():
         
         conn.commit()
         
-        # 🔹 MOCK SENDING (Log to console and return in response for demo)
-        print(f"DEBUG: Sending OTP {otp} to {identifier}")
+        # 🔹 ACTUAL SENDING
+        sent_success = False
+        method = "none"
+        if is_email:
+            sent_success = send_otp_via_email(identifier, otp)
+            method = "email"
+        else:
+            sent_success = send_otp_via_sms(identifier, otp)
+            method = "phone"
+        
+        if not sent_success:
+            print(f"DEBUG: Failed to send {method} OTP. Sending in debug response for now.")
         
         return jsonify({
-            "message": f"OTP sent to {identifier}",
-            "type": "email" if is_email else "phone",
-            "debug_otp": otp # REMOVE THIS IN PRODUCTION
+            "message": f"OTP sent to your {method} successfully" if sent_success else f"Failed to send OTP to {identifier}, please check logs.",
+            "type": method,
+            "debug_otp": otp if not sent_success else None # Only return OTP if sending failed for testing
         })
     except Exception as e:
         conn.rollback()
@@ -135,7 +193,7 @@ def request_otp():
 
 @app.route('/verify_otp', methods=['POST'])
 def verify_otp():
-    data = request.json
+    data = request.json or {}
     identifier = data.get('identifier', '').strip().lower()
     otp = data.get('otp', '').strip()
 
@@ -166,7 +224,7 @@ def verify_otp():
 
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.json
+    data = request.json or {}
     username = data.get('username')
     password = data.get('password')
 
@@ -186,7 +244,7 @@ def login():
 
 @app.route('/update_token', methods=['POST'])
 def update_token():
-    data = request.json
+    data = request.json or {}
     username = data.get('username')
     push_token = data.get('push_token')
     
@@ -228,6 +286,23 @@ def get_conversations(username):
     
     result = [{"user": r[0], "latest_activity": r[1]} for r in rows if r[0]]
     return jsonify(result)
+
+@app.route('/resolve_user/<identifier>')
+def resolve_user(identifier):
+    identifier = identifier.strip().lower()
+    conn = get_db()
+    cur = conn.cursor()
+    # Find the real username associated with this phone or email
+    cur.execute("SELECT username FROM users WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    if user:
+        return jsonify({"username": user[0]})
+    else:
+        # If user doesn't exist yet, we still allow starting a chat with that ID (it will create a placeholder)
+        return jsonify({"username": identifier})
 
 @app.route('/messages/<user1>/<user2>')
 def get_messages(user1, user2):
@@ -280,7 +355,7 @@ def delete_chat(user1, user2):
 
 @app.route('/delete_account', methods=['DELETE'])
 def delete_account():
-    data = request.json
+    data = request.json or {}
     username = data.get('username')
     password = data.get('password')
 
@@ -309,13 +384,14 @@ def delete_account():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    data = request.json.get('data')
-    if not data: return jsonify({"error": "No data"}), 400
+    data = request.json or {}
+    data_content = data.get('data')
+    if not data_content: return jsonify({"error": "No data"}), 400
     conn = get_db()
     cur = conn.cursor()
     # 🔹 Hand off all Time Management to AWS native clocks to prevent standard Timezone Drift bugs!
     # 🔹 Changed from '1 minute' to '24 hours' so offline users have time to fetch their encrypted attachments!
-    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '24 hours', %s) RETURNING id", (data, 1))
+    cur.execute("INSERT INTO secure_data (data, expiry_time, access_count) VALUES (%s, NOW() + INTERVAL '24 hours', %s) RETURNING id", (data_content, 1))
     new_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
@@ -491,3 +567,4 @@ def view_db():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     socketio.run(app, debug=False, host='0.0.0.0', port=port)
+  
