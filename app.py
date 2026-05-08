@@ -303,14 +303,19 @@ def get_profile(username):
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-            SELECT username, email, phone FROM users 
-            WHERE LOWER(username) = LOWER(%s)
-        """, (username,))
+            SELECT username, email, phone, password FROM users 
+            WHERE LOWER(username) = LOWER(%s) OR LOWER(email) = LOWER(%s) OR LOWER(phone) = LOWER(%s)
+        """, (username, username, username))
         user = cur.fetchone()
         cur.close()
         conn.close()
         if user:
-            return jsonify({"username": user[0], "email": user[1], "phone": user[2]})
+            return jsonify({
+                "username": user[0], 
+                "email": user[1], 
+                "phone": user[2],
+                "has_password": user[3] is not None and user[3] != ""
+            })
         else:
             return jsonify({"error": "User not found"}), 404
     except Exception as e:
@@ -319,7 +324,8 @@ def get_profile(username):
 @app.route('/update_profile', methods=['POST'])
 def update_profile():
     """Allow a user to update their email and/or phone number.
-    Requires username + current password for authentication."""
+    Requires identifier + current password. If user has no password (OTP signup), 
+    the provided password becomes their new password."""
     data = request.json or {}
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
@@ -336,20 +342,41 @@ def update_profile():
         conn = get_db()
         cur = conn.cursor()
 
-        # 🔹 Verify credentials before allowing profile edit
+        # 🔹 Fetch current user details including password
         cur.execute("""
-            SELECT id FROM users 
-            WHERE LOWER(username)=LOWER(%s) AND password=%s
-        """, (username, password))
+            SELECT id, password FROM users 
+            WHERE LOWER(username)=LOWER(%s) OR LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s)
+        """, (username, username, username))
         user = cur.fetchone()
 
         if not user:
             cur.close(); conn.close()
-            return jsonify({"error": "Unauthorized: invalid username or password"}), 401
+            return jsonify({"error": "User not found"}), 404
 
-        # 🔹 Build update query dynamically based on provided fields
+        user_id, stored_password = user
+
+        # 🔹 Security Check: 
+        # 1. If user HAS a password, it MUST match.
+        # 2. If user HAS NO password (NULL), we allow them to update AND set this as their new password.
+        if stored_password is not None and stored_password != "":
+            if stored_password != password:
+                cur.close(); conn.close()
+                return jsonify({"error": "Unauthorized: invalid password"}), 401
+            set_pwd_logic = "" # No need to update password if it already matched
+        else:
+            # User had no password, so we set the one they just typed as their new password!
+            set_pwd_logic = "password=%s,"
+            print(f"[Profile] User {username} is setting their first password during profile update.")
+
+        # 🔹 Build update query
         fields = []
         values = []
+        
+        # If we need to set the first password
+        if set_pwd_logic:
+            fields.append("password=%s")
+            values.append(password)
+            
         if new_email:
             fields.append("email=%s")
             values.append(new_email)
@@ -357,7 +384,7 @@ def update_profile():
             fields.append("phone=%s")
             values.append(new_phone)
 
-        values.append(user[0])  # WHERE id=
+        values.append(user_id)  # WHERE id=
         cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=%s", values)
         conn.commit()
         cur.close()
