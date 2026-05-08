@@ -7,3 +7,4 @@ gevent-websocket
 gunicorn
 python-dotenv
 twilio
+psycogreen
