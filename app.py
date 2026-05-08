@@ -245,26 +245,35 @@ def verify_otp():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json or {}
-    username = data.get('username')
-    password = data.get('password')
+    # 🔹 Accept 'identifier' (username/email/phone) OR legacy 'username' field
+    identifier = (data.get('identifier') or data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+
+    if not identifier or not password:
+        return jsonify({"error": "Identifier and password required"}), 400
 
     try:
         conn = get_db()
         cur = conn.cursor()
 
-        # 🔹 Case-insensitive check and return canonical username
+        # 🔹 Case-insensitive match against username, email, or phone
         cur.execute("""
-            SELECT username FROM users 
+            SELECT username, email, phone FROM users 
             WHERE (LOWER(username)=LOWER(%s) OR LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s)) 
             AND password=%s
-        """, (username or "", username or "", username or "", password or ""))
+        """, (identifier, identifier, identifier, password))
         user = cur.fetchone()
 
         cur.close()
         conn.close()
 
         if user:
-            return jsonify({"message": "Login success", "uid": user[0]})
+            return jsonify({
+                "message": "Login success",
+                "uid": user[0],
+                "email": user[1],
+                "phone": user[2]
+            })
         else:
             return jsonify({"error": "Invalid credentials"}), 401
     except Exception as e:
@@ -286,6 +295,78 @@ def update_token():
     cur.close()
     conn.close()
     return jsonify({"message": "Token updated"})
+
+@app.route('/get_profile/<username>')
+def get_profile(username):
+    """Fetch the current email and phone for a user to display in the edit profile screen."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT username, email, phone FROM users 
+            WHERE LOWER(username) = LOWER(%s)
+        """, (username,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        if user:
+            return jsonify({"username": user[0], "email": user[1], "phone": user[2]})
+        else:
+            return jsonify({"error": "User not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/update_profile', methods=['POST'])
+def update_profile():
+    """Allow a user to update their email and/or phone number.
+    Requires username + current password for authentication."""
+    data = request.json or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+    new_email = (data.get('email') or '').strip() or None
+    new_phone = (data.get('phone') or '').strip() or None
+
+    if not username or not password:
+        return jsonify({"error": "Username and password are required"}), 400
+
+    if not new_email and not new_phone:
+        return jsonify({"error": "Provide at least one field to update (email or phone)"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # 🔹 Verify credentials before allowing profile edit
+        cur.execute("""
+            SELECT id FROM users 
+            WHERE LOWER(username)=LOWER(%s) AND password=%s
+        """, (username, password))
+        user = cur.fetchone()
+
+        if not user:
+            cur.close(); conn.close()
+            return jsonify({"error": "Unauthorized: invalid username or password"}), 401
+
+        # 🔹 Build update query dynamically based on provided fields
+        fields = []
+        values = []
+        if new_email:
+            fields.append("email=%s")
+            values.append(new_email)
+        if new_phone:
+            fields.append("phone=%s")
+            values.append(new_phone)
+
+        values.append(user[0])  # WHERE id=
+        cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=%s", values)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Profile updated successfully"})
+    except psycopg2.IntegrityError:
+        return jsonify({"error": "Email or phone already in use by another account"}), 409
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/conversations/<username>')
 def get_conversations(username):
