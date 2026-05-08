@@ -1,6 +1,10 @@
-# 🔹 Core Gevent Hack: Force python networking natively into async memory so Gunicorn cloud servers NEVER crash from Socket Timeout!
 from gevent import monkey
 monkey.patch_all()
+try:
+    import psycogreen.gevent
+    psycogreen.gevent.patch_psycopg2()
+except ImportError:
+    print("[WARNING] psycogreen not found. Database calls will be synchronous (blocking).")
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -111,7 +115,7 @@ def signup():
         cur.close()
         conn.close()
         return jsonify({"message": "User created"})
-    except psycopg2.errors.UniqueViolation:
+    except psycopg2.IntegrityError:
         return jsonify({"error": "User exists"}), 400
     except Exception as e:
         return jsonify({"error": "Error creating user"}), 400
@@ -538,10 +542,15 @@ def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
         conn = get_db()
         curr = conn.cursor()
         
+        # 🔹 If it's a group message, extract just the ID for the database 'receiver' column
+        db_receiver = receiver_uid
+        if receiver_uid.startswith("GROUP:"):
+            db_receiver = receiver_uid.split(":")[1]
+
         # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
         curr.execute(
             "INSERT INTO secure_data (data, expiry_time, access_count, sender, receiver) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s, %s, %s)", 
-            (payload, ttl_seconds, 9999, sender_uid, receiver_uid)
+            (payload, ttl_seconds, 9999, sender_uid, db_receiver)
         )
         
         conn.commit()
@@ -584,7 +593,7 @@ def handle_message(data):
     receiver_uid = data.get('receiver_uid')
     sender_uid = data.get('sender_uid')
     if receiver_uid:
-        emit('receive_message', data, room=receiver_uid)
+        emit('receive_message', data, to=receiver_uid)
         
         # Gevent event loops freeze completely when using synchronous C-Extensions like psycopg2.
         # We MUST spin off database inserts directly into a SocketIO background task to prevent client disconnections!
@@ -647,7 +656,7 @@ def handle_delete_everyone(data):
     file_id = data.get('file_id')
     
     if receiver_uid:
-        emit('message_deleted', {'encrypted_payload': encrypted_payload}, room=receiver_uid)
+        emit('message_deleted', {'encrypted_payload': encrypted_payload}, to=receiver_uid)
         
     def execute_wipe():
         try:
