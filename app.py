@@ -8,7 +8,6 @@ from flask_socketio import SocketIO, emit, join_room
 import psycopg2
 import os
 from datetime import datetime, timedelta
-from flask import send_from_directory
 import urllib.request
 import json
 import random
@@ -41,39 +40,55 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://neondb_owner:npg_T3Gy0zKZIDPX@ep-lively-flower-a4ahr0gx-pooler.us-east-1.aws.neon.tech/datavanish_db?sslmode=require')
 
 # 🔹 Thread-Safe Database Generator
-# By wrapping the DB connection mathematically into an on-demand function, Gunicorn Boots infinitely fast and bypasses 502 Boot Timeouts completely!
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    init_cur = conn.cursor()
-    init_cur.execute("""
+    return psycopg2.connect(DATABASE_URL)
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS secure_data (
             id SERIAL PRIMARY KEY,
             data TEXT,
             expiry_time TIMESTAMP,
-            access_count INTEGER
+            access_count INTEGER,
+            sender TEXT,
+            receiver TEXT
         );
         
-        ALTER TABLE secure_data ADD COLUMN IF NOT EXISTS sender TEXT;
-        ALTER TABLE secure_data ADD COLUMN IF NOT EXISTS receiver TEXT;
-
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE,
-            password TEXT
+            password TEXT,
+            email TEXT,
+            phone TEXT,
+            otp_code TEXT,
+            otp_expiry TIMESTAMP,
+            push_token TEXT
         );
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_code TEXT;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_expiry TIMESTAMP;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT;
+        
+        CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            creator TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
 
-        -- Ensure uniqueness constraints if not present (optional but recommended)
-        -- Note: Postgres doesn't support 'ADD COLUMN IF NOT EXISTS ... UNIQUE' in one go easily for existing tables without risks, 
-        -- so we'll just add the columns and handle uniqueness in the app or via separate SQL if needed.
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+            username TEXT,
+            joined_at TIMESTAMP DEFAULT NOW()
+        );
     """)
     conn.commit()
-    init_cur.close()
-    return conn
+    cur.close()
+    conn.close()
+
+# Initialize DB at startup
+try:
+    init_db()
+except Exception as e:
+    print(f"[DB-INIT-ERROR] {e}")
 
 @app.route('/')
 def home():
@@ -88,21 +103,18 @@ def signup():
     if not username or not password:
         return jsonify({"error": "Missing fields"}), 400
 
-    conn = get_db()
-    cur = conn.cursor()
-
     try:
+        conn = get_db()
+        cur = conn.cursor()
         cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, password))
         conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"message": "User created"})
     except psycopg2.errors.UniqueViolation:
-        conn.rollback()
         return jsonify({"error": "User exists"}), 400
     except Exception as e:
         return jsonify({"error": "Error creating user"}), 400
-    finally:
-        cur.close()
-        conn.close()
 
 def send_otp_via_email(email, otp):
     try:
@@ -147,12 +159,11 @@ def request_otp():
     otp = str(random.randint(100000, 999999))
     expiry = datetime.now() + timedelta(minutes=5)
 
-    conn = get_db()
-    cur = conn.cursor()
-
     try:
+        conn = get_db()
+        cur = conn.cursor()
         # Check if user exists, if not create a placeholder
-        cur.execute("SELECT id FROM users WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
+        cur.execute("SELECT id FROM users WHERE LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s) OR LOWER(username)=LOWER(%s)", (identifier, identifier, identifier))
         user = cur.fetchone()
         
         if not user:
@@ -165,6 +176,8 @@ def request_otp():
             cur.execute("UPDATE users SET otp_code=%s, otp_expiry=%s WHERE id=%s", (otp, expiry, user[0]))
         
         conn.commit()
+        cur.close()
+        conn.close()
         
         # 🔹 ACTUAL SENDING
         sent_success = False
@@ -200,27 +213,30 @@ def verify_otp():
     if not identifier or not otp:
         return jsonify({"error": "Identifier and OTP required"}), 400
 
-    conn = get_db()
-    cur = conn.cursor()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
 
-    cur.execute("SELECT username, otp_code, otp_expiry FROM users WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
-    user = cur.fetchone()
+        cur.execute("SELECT username, otp_code, otp_expiry FROM users WHERE LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s) OR LOWER(username)=LOWER(%s)", (identifier, identifier, identifier))
+        user = cur.fetchone()
 
-    if not user:
-        cur.close(); conn.close()
-        return jsonify({"error": "User not found"}), 404
+        if not user:
+            cur.close(); conn.close()
+            return jsonify({"error": "User not found"}), 404
 
-    username, stored_otp, expiry = user
+        username, stored_otp, expiry = user
 
-    if stored_otp == otp and datetime.now() < expiry:
-        # Clear OTP after success
-        cur.execute("UPDATE users SET otp_code=NULL, otp_expiry=NULL WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
-        conn.commit()
-        cur.close(); conn.close()
-        return jsonify({"message": "Login success", "uid": username})
-    else:
-        cur.close(); conn.close()
-        return jsonify({"error": "Invalid or expired OTP"}), 401
+        if stored_otp == otp and datetime.now() < expiry:
+            # Clear OTP after success
+            cur.execute("UPDATE users SET otp_code=NULL, otp_expiry=NULL WHERE LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s) OR LOWER(username)=LOWER(%s)", (identifier, identifier, identifier))
+            conn.commit()
+            cur.close(); conn.close()
+            return jsonify({"message": "Login success", "uid": username})
+        else:
+            cur.close(); conn.close()
+            return jsonify({"error": "Invalid or expired OTP"}), 401
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -228,19 +244,27 @@ def login():
     username = data.get('username')
     password = data.get('password')
 
-    conn = get_db()
-    cur = conn.cursor()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
 
-    cur.execute("SELECT * FROM users WHERE (username=%s OR email=%s OR phone=%s) AND password=%s", (username, username, username, password))
-    user = cur.fetchone()
+        # 🔹 Case-insensitive check and return canonical username
+        cur.execute("""
+            SELECT username FROM users 
+            WHERE (LOWER(username)=LOWER(%s) OR LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s)) 
+            AND password=%s
+        """, (username or "", username or "", username or "", password or ""))
+        user = cur.fetchone()
 
-    cur.close()
-    conn.close()
+        cur.close()
+        conn.close()
 
-    if user:
-        return jsonify({"message": "Login success", "uid": username})
-    else:
-        return jsonify({"error": "Invalid credentials"}), 401
+        if user:
+            return jsonify({"message": "Login success", "uid": user[0]})
+        else:
+            return jsonify({"error": "Invalid credentials"}), 401
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/update_token', methods=['POST'])
 def update_token():
@@ -253,7 +277,7 @@ def update_token():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET push_token=%s WHERE username=%s", (push_token, username))
+    cur.execute("UPDATE users SET push_token=%s WHERE LOWER(username)=LOWER(%s)", (push_token, username))
     conn.commit()
     cur.close()
     conn.close()
@@ -269,23 +293,82 @@ def get_conversations(username):
     conn.commit()
 
     cur.execute("""
-        SELECT DISTINCT 
-            CASE 
-                WHEN sender = %s THEN receiver 
-                ELSE sender 
-            END AS user_alias,
-            MAX(expiry_time) 
-        FROM secure_data
-        WHERE sender = %s OR receiver = %s
-        GROUP BY user_alias
+        SELECT 
+            sub.user_alias, 
+            sub.latest_activity,
+            u.email,
+            u.phone
+        FROM (
+            SELECT 
+                CASE 
+                    WHEN sender = %s THEN receiver 
+                    ELSE sender 
+                END AS user_alias,
+                MAX(expiry_time) as latest_activity
+            FROM secure_data
+            WHERE sender = %s OR receiver = %s
+            GROUP BY user_alias
+        ) sub
+        LEFT JOIN users u ON LOWER(sub.user_alias) = LOWER(u.username)
     """, (username, username, username))
 
     rows = cur.fetchall()
+    
+    result = [{"user": r[0], "latest_activity": r[1], "email": r[2], "phone": r[3]} for r in rows if r[0]]
+    
+    # 🔹 Fetch groups the user belongs to
+    cur.execute("""
+        SELECT g.id, g.name, MAX(s.expiry_time)
+        FROM groups g
+        JOIN group_members gm ON g.id = gm.group_id
+        LEFT JOIN secure_data s ON CAST(g.id AS TEXT) = s.receiver
+        WHERE LOWER(gm.username) = LOWER(%s)
+        GROUP BY g.id, g.name
+    """, (username,))
+    
+    group_rows = cur.fetchall()
+    for gr in group_rows:
+        result.append({
+            "user": f"GROUP:{gr[0]}:{gr[1]}", # Special prefix for groups
+            "latest_activity": gr[2],
+            "is_group": True
+        })
+
     cur.close()
     conn.close()
-    
-    result = [{"user": r[0], "latest_activity": r[1]} for r in rows if r[0]]
     return jsonify(result)
+
+@app.route('/create_group', methods=['POST'])
+def create_group():
+    data = request.json or {}
+    name = data.get('name')
+    creator = data.get('creator')
+    members = data.get('members', []) # List of usernames
+
+    if not name or not creator:
+        return jsonify({"error": "Missing fields"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO groups (name, creator) VALUES (%s, %s) RETURNING id", (name, creator))
+        group_id = cur.fetchone()[0]
+        
+        # Add creator as member
+        if creator not in members:
+            members.append(creator)
+            
+        for member in members:
+            cur.execute("INSERT INTO group_members (group_id, username) VALUES (%s, %s)", (group_id, member.strip().lower()))
+            
+        conn.commit()
+        return jsonify({"message": "Group created", "group_id": group_id})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route('/resolve_user/<identifier>')
 def resolve_user(identifier):
@@ -293,16 +376,28 @@ def resolve_user(identifier):
     conn = get_db()
     cur = conn.cursor()
     # Find the real username associated with this phone or email
-    cur.execute("SELECT username FROM users WHERE email=%s OR phone=%s OR username=%s", (identifier, identifier, identifier))
+    # Find the real username and contact info associated with this ID
+    cur.execute("""
+        SELECT username, email, phone FROM users 
+        WHERE LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s) OR LOWER(username)=LOWER(%s)
+    """, (identifier, identifier, identifier))
     user = cur.fetchone()
     cur.close()
     conn.close()
     
     if user:
-        return jsonify({"username": user[0]})
+        return jsonify({
+            "username": user[0],
+            "email": user[1],
+            "phone": user[2]
+        })
     else:
-        # If user doesn't exist yet, we still allow starting a chat with that ID (it will create a placeholder)
-        return jsonify({"username": identifier})
+        # Check if it's a group ID
+        if identifier.upper().startswith("GROUP:"):
+            return jsonify({"username": identifier.upper(), "is_group": True})
+        
+        # If user doesn't exist yet, return identifier as username
+        return jsonify({"username": identifier, "email": None, "phone": None})
 
 @app.route('/messages/<user1>/<user2>')
 def get_messages(user1, user2):
@@ -323,11 +418,21 @@ def get_messages(user1, user2):
     """, (user1, user2))
     conn.commit()
 
-    cur.execute("""
-        SELECT data, sender, receiver, id FROM secure_data
-        WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
-        ORDER BY id ASC
-    """, (user1, user2, user2, user1))
+    # 🔹 Handle Group Messages
+    if user2.startswith("GROUP:"):
+        group_id = user2.split(":")[1]
+        cur.execute("""
+            SELECT data, sender, receiver, id FROM secure_data
+            WHERE receiver = %s
+            ORDER BY id ASC
+        """, (group_id,))
+    else:
+        # 🔹 Handle 1-to-1 Messages
+        cur.execute("""
+            SELECT data, sender, receiver, id FROM secure_data
+            WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+            ORDER BY id ASC
+        """, (user1, user2, user2, user1))
 
     rows = cur.fetchall()
     cur.close()
@@ -454,6 +559,25 @@ def handle_join(data):
     if uid:
         join_room(uid)
         print(f"[Socket] User {uid} securely joined real-time socket room.")
+        
+        # 🔹 Also join all group rooms this user belongs to
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT g.id, g.name 
+                FROM groups g 
+                JOIN group_members gm ON g.id = gm.group_id 
+                WHERE LOWER(gm.username) = LOWER(%s)
+            """, (uid,))
+            groups = cur.fetchall()
+            for gid, gname in groups:
+                room_name = f"GROUP:{gid}:{gname}"
+                join_room(room_name)
+                print(f"[Socket] User {uid} joined group room: {room_name}")
+            cur.close()
+            conn.close()
+        except: pass
 
 @socketio.on('send_message')
 def handle_message(data):
@@ -476,20 +600,34 @@ def handle_message(data):
             try:
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("SELECT push_token FROM users WHERE username=%s", (receiver_uid,))
-                user_row = cur.fetchone()
+                
+                tokens = []
+                if receiver_uid.startswith("GROUP:"):
+                    gid = receiver_uid.split(":")[1]
+                    cur.execute("""
+                        SELECT push_token FROM users u 
+                        JOIN group_members gm ON u.username = gm.username 
+                        WHERE gm.group_id = %s AND LOWER(u.username) != LOWER(%s)
+                    """, (gid, sender_uid))
+                    tokens = [r[0] for r in cur.fetchall() if r[0]]
+                else:
+                    cur.execute("SELECT push_token FROM users WHERE username=%s", (receiver_uid,))
+                    user_row = cur.fetchone()
+                    if user_row and user_row[0]:
+                        tokens = [user_row[0]]
+                
                 cur.close()
                 conn.close()
                 
-                if user_row and user_row[0]:
+                for push_token in tokens:
                     # 🔹 WhatsApp Style: Show Sender Name as Title
                     display_sender = sender_uid.capitalize()
                     message = {
-                        'to': user_row[0],
+                        'to': push_token,
                         'sound': 'default',
-                        'title': f"{display_sender}",
-                        'body': f"Sent you a secure message. Tap to decrypt.",
-                        'data': {'sender_uid': sender_uid} # Deep linking context
+                        'title': f"{display_sender}" if not receiver_uid.startswith("GROUP:") else f"{receiver_uid.split(':')[2]}",
+                        'body': f"Sent you a secure message. Tap to decrypt." if not receiver_uid.startswith("GROUP:") else f"{display_sender}: New message",
+                        'data': {'sender_uid': sender_uid, 'receiver_uid': receiver_uid} # Deep linking context
                     }
                     req = urllib.request.Request(
                         'https://exp.host/--/api/v2/push/send',
@@ -567,4 +705,3 @@ def view_db():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     socketio.run(app, debug=False, host='0.0.0.0', port=port)
-  
