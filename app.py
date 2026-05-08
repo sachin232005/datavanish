@@ -2,9 +2,9 @@ from gevent import monkey
 monkey.patch_all()
 try:
     import psycogreen.gevent
-    psycogreen.gevent.patch_psycopg2()
-except ImportError:
-    print("[WARNING] psycogreen not found. Database calls will be synchronous (blocking).")
+    psycogreen.gevent.patch_psycopg()
+except (ImportError, AttributeError):
+    print("[WARNING] psycogreen not available or incompatible. Database calls will be synchronous (blocking).")
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
