@@ -304,8 +304,8 @@ def get_profile(username):
         cur = conn.cursor()
         cur.execute("""
             SELECT username, email, phone, password FROM users 
-            WHERE LOWER(username) = LOWER(%s) OR LOWER(email) = LOWER(%s) OR LOWER(phone) = LOWER(%s)
-        """, (username, username, username))
+            WHERE LOWER(username) = LOWER(%s)
+        """, (username,))
         user = cur.fetchone()
         cur.close()
         conn.close()
@@ -345,8 +345,8 @@ def update_profile():
         # 🔹 Fetch current user details including password
         cur.execute("""
             SELECT id, password FROM users 
-            WHERE LOWER(username)=LOWER(%s) OR LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s)
-        """, (username, username, username))
+            WHERE LOWER(username)=LOWER(%s)
+        """, (username,))
         user = cur.fetchone()
 
         if not user:
