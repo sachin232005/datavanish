@@ -577,10 +577,14 @@ def delete_chat(user1, user2):
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("""
-            DELETE FROM secure_data 
-            WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
-        """, (user1, user2, user2, user1))
+        if user2.startswith("GROUP:"):
+            group_id = user2.split(":")[1]
+            cur.execute("DELETE FROM secure_data WHERE receiver = %s", (group_id,))
+        else:
+            cur.execute("""
+                DELETE FROM secure_data 
+                WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+            """, (user1, user2, user2, user1))
         conn.commit()
         return jsonify({"message": "Chat wiped permanently."}), 200
     except Exception as e:
