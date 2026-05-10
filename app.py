@@ -418,36 +418,42 @@ def get_conversations(username):
 
     cur.execute("""
         SELECT 
-            sub.user_alias, 
-            sub.latest_activity,
+            sub2.user_alias, 
+            sub2.latest_activity,
             u.email,
-            u.phone
+            u.phone,
+            sub2.latest_data
         FROM (
-            SELECT 
-                CASE 
-                    WHEN sender = %s THEN receiver 
-                    ELSE sender 
-                END AS user_alias,
-                MAX(expiry_time) as latest_activity
-            FROM secure_data
-            WHERE sender = %s OR receiver = %s
-            GROUP BY user_alias
-        ) sub
-        JOIN users u ON LOWER(sub.user_alias) = LOWER(u.username)
+            SELECT DISTINCT ON (user_alias)
+                user_alias,
+                expiry_time as latest_activity,
+                data as latest_data
+            FROM (
+                SELECT 
+                    CASE WHEN sender = %s THEN receiver ELSE sender END AS user_alias,
+                    expiry_time,
+                    data,
+                    id
+                FROM secure_data
+                WHERE sender = %s OR receiver = %s
+            ) sub1
+            ORDER BY user_alias, id DESC
+        ) sub2
+        JOIN users u ON LOWER(sub2.user_alias) = LOWER(u.username)
     """, (username, username, username))
 
     rows = cur.fetchall()
     
-    result = [{"user": r[0], "latest_activity": r[1], "email": r[2], "phone": r[3]} for r in rows if r[0]]
+    result = [{"user": r[0], "latest_activity": r[1], "email": r[2], "phone": r[3], "latest_data": r[4]} for r in rows if r[0]]
     
     # 🔹 Fetch groups the user belongs to
     cur.execute("""
-        SELECT g.id, g.name, MAX(s.expiry_time)
+        SELECT g.id, g.name, 
+               (SELECT expiry_time FROM secure_data WHERE receiver = CAST(g.id AS TEXT) ORDER BY id DESC LIMIT 1) as latest_activity,
+               (SELECT data FROM secure_data WHERE receiver = CAST(g.id AS TEXT) ORDER BY id DESC LIMIT 1) as latest_data
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
-        LEFT JOIN secure_data s ON CAST(g.id AS TEXT) = s.receiver
         WHERE LOWER(gm.username) = LOWER(%s)
-        GROUP BY g.id, g.name
     """, (username,))
     
     group_rows = cur.fetchall()
@@ -455,6 +461,7 @@ def get_conversations(username):
         result.append({
             "user": f"GROUP:{gr[0]}:{gr[1]}", # Special prefix for groups
             "latest_activity": gr[2],
+            "latest_data": gr[3],
             "is_group": True
         })
 
