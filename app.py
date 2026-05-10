@@ -331,12 +331,13 @@ def update_profile():
     password = (data.get('password') or '').strip()
     new_email = (data.get('email') or '').strip() or None
     new_phone = (data.get('phone') or '').strip() or None
+    new_username = (data.get('new_username') or '').strip() or None
 
     if not username or not password:
         return jsonify({"error": "Username and password are required"}), 400
 
-    if not new_email and not new_phone:
-        return jsonify({"error": "Provide at least one field to update (email or phone)"}), 400
+    if not new_email and not new_phone and not new_username:
+        return jsonify({"error": "Provide at least one field to update (username, email or phone)"}), 400
 
     try:
         conn = get_db()
@@ -383,15 +384,26 @@ def update_profile():
         if new_phone:
             fields.append("phone=%s")
             values.append(new_phone)
+        if new_username:
+            fields.append("username=%s")
+            values.append(new_username)
 
         values.append(user_id)  # WHERE id=
         cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=%s", values)
+        
+        if new_username:
+            cur.execute("UPDATE secure_data SET sender=%s WHERE LOWER(sender)=LOWER(%s)", (new_username, username))
+            cur.execute("UPDATE secure_data SET receiver=%s WHERE LOWER(receiver)=LOWER(%s)", (new_username, username))
+            cur.execute("UPDATE group_members SET username=%s WHERE LOWER(username)=LOWER(%s)", (new_username, username))
+            cur.execute("UPDATE groups SET creator=%s WHERE LOWER(creator)=LOWER(%s)", (new_username, username))
+            
         conn.commit()
         cur.close()
         conn.close()
         return jsonify({"message": "Profile updated successfully"})
     except psycopg2.IntegrityError:
-        return jsonify({"error": "Email or phone already in use by another account"}), 409
+        conn.rollback()
+        return jsonify({"error": "Username, email, or phone already in use by another account"}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
