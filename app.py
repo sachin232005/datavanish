@@ -433,7 +433,7 @@ def get_conversations(username):
             WHERE sender = %s OR receiver = %s
             GROUP BY user_alias
         ) sub
-        LEFT JOIN users u ON LOWER(sub.user_alias) = LOWER(u.username)
+        JOIN users u ON LOWER(sub.user_alias) = LOWER(u.username)
     """, (username, username, username))
 
     rows = cur.fetchall()
@@ -520,8 +520,8 @@ def resolve_user(identifier):
         if identifier.upper().startswith("GROUP:"):
             return jsonify({"username": identifier.upper(), "is_group": True})
         
-        # If user doesn't exist yet, return identifier as username
-        return jsonify({"username": identifier, "email": None, "phone": None})
+        # If user doesn't exist, block chat creation
+        return jsonify({"error": "User is not registered on the server"}), 404
 
 @app.route('/messages/<user1>/<user2>')
 def get_messages(user1, user2):
