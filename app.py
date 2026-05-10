@@ -171,11 +171,9 @@ def request_otp():
         user = cur.fetchone()
         
         if not user:
-            # Create user if doesn't exist
-            if is_email:
-                cur.execute("INSERT INTO users (username, email, otp_code, otp_expiry) VALUES (%s, %s, %s, %s)", (identifier, identifier, otp, expiry))
-            else:
-                cur.execute("INSERT INTO users (username, phone, otp_code, otp_expiry) VALUES (%s, %s, %s, %s)", (identifier, identifier, otp, expiry))
+            cur.close()
+            conn.close()
+            return jsonify({"error": "User not found. Please sign up first."}), 404
         else:
             cur.execute("UPDATE users SET otp_code=%s, otp_expiry=%s WHERE id=%s", (otp, expiry, user[0]))
         
@@ -329,14 +327,18 @@ def update_profile():
     data = request.json or {}
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
-    new_email = (data.get('email') or '').strip() or None
-    new_phone = (data.get('phone') or '').strip() or None
-    new_username = (data.get('new_username') or '').strip() or None
+    new_email = data.get('email')
+    if new_email is not None: new_email = new_email.strip() or None
+    new_phone = data.get('phone')
+    if new_phone is not None: new_phone = new_phone.strip() or None
+    new_username = data.get('new_username')
+    if new_username is not None: new_username = new_username.strip() or None
 
-    if not username or not password:
-        return jsonify({"error": "Username and password are required"}), 400
+    has_update_fields = 'email' in data or 'phone' in data or 'new_username' in data
+    if not has_update_fields and not password:
+        return jsonify({"error": "Provide at least one field to update"}), 400
 
-    if not new_email and not new_phone and not new_username:
+    if not new_email and not new_phone and not new_username and 'email' not in data and 'phone' not in data and 'new_username' not in data:
         return jsonify({"error": "Provide at least one field to update (username, email or phone)"}), 400
 
     try:
@@ -378,13 +380,13 @@ def update_profile():
             fields.append("password=%s")
             values.append(password)
             
-        if new_email:
+        if 'email' in data:
             fields.append("email=%s")
             values.append(new_email)
-        if new_phone:
+        if 'phone' in data:
             fields.append("phone=%s")
             values.append(new_phone)
-        if new_username:
+        if 'new_username' in data and new_username:
             fields.append("username=%s")
             values.append(new_username)
 
