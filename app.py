@@ -400,8 +400,8 @@ def get_conversations(username):
     cur = conn.cursor()
 
     # 🔹 Auto-vanish naturally expired text data from the cloud
-    cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
-    conn.commit()
+    # cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
+    # conn.commit()
 
     cur.execute("""
         SELECT 
@@ -474,18 +474,17 @@ def get_messages(user1, user2):
     cur = conn.cursor()
 
     # 🔹 Auto-vanish naturally expired text data from the cloud
-    cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
-    conn.commit()
+    # cur.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
+    # conn.commit()
 
     # 🔹 [OFFLINE DELIVERY & VANISH ON READ]
-    # If the receiver is finally fetching messages that have been sitting offline...
-    # We trigger the physical vanishing protocol (30 seconds remaining) exactly when they look at it!
-    cur.execute("""
-        UPDATE secure_data 
-        SET expiry_time = NOW() + INTERVAL '30 seconds'
-        WHERE receiver = %s AND sender = %s AND expiry_time > NOW() + INTERVAL '1 minute'
-    """, (user1, user2))
-    conn.commit()
+    # We have removed the vanish on read protocol to make chat history permanent.
+    # cur.execute("""
+    #     UPDATE secure_data 
+    #     SET expiry_time = NOW() + INTERVAL '30 seconds'
+    #     WHERE receiver = %s AND sender = %s AND expiry_time > NOW() + INTERVAL '1 minute'
+    # """, (user1, user2))
+    # conn.commit()
 
     # 🔹 Handle 1-to-1 Messages
     cur.execute("""
@@ -602,8 +601,8 @@ def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
 
         # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
         curr.execute(
-            "INSERT INTO secure_data (data, expiry_time, access_count, sender, receiver) VALUES (%s, NOW() + (%s * INTERVAL '1 second'), %s, %s, %s)", 
-            (payload, ttl_seconds, 9999, sender_uid, db_receiver)
+            "INSERT INTO secure_data (data, expiry_time, access_count, sender, receiver) VALUES (%s, NOW() + INTERVAL '100 years', %s, %s, %s)", 
+            (payload, 9999, sender_uid, db_receiver)
         )
         
         conn.commit()
@@ -709,8 +708,8 @@ def view_db():
     try:
         conn = get_db()
         curr = conn.cursor()
-        curr.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
-        conn.commit()
+        # curr.execute("DELETE FROM secure_data WHERE expiry_time < NOW()")
+        # conn.commit()
         curr.execute("SELECT id, data, expiry_time, sender, receiver FROM secure_data ORDER BY id DESC LIMIT 50")
         rows = curr.fetchall()
         
