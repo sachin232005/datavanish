@@ -70,19 +70,6 @@ def init_db():
             otp_expiry TIMESTAMP,
             push_token TEXT
         );
-        
-        CREATE TABLE IF NOT EXISTS groups (
-            id SERIAL PRIMARY KEY,
-            name TEXT,
-            creator TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS group_members (
-            group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
-            username TEXT,
-            joined_at TIMESTAMP DEFAULT NOW()
-        );
     """)
     conn.commit()
     cur.close()
@@ -396,8 +383,6 @@ def update_profile():
         if new_username:
             cur.execute("UPDATE secure_data SET sender=%s WHERE LOWER(sender)=LOWER(%s)", (new_username, username))
             cur.execute("UPDATE secure_data SET receiver=%s WHERE LOWER(receiver)=LOWER(%s)", (new_username, username))
-            cur.execute("UPDATE group_members SET username=%s WHERE LOWER(username)=LOWER(%s)", (new_username, username))
-            cur.execute("UPDATE groups SET creator=%s WHERE LOWER(creator)=LOWER(%s)", (new_username, username))
             
         conn.commit()
         cur.close()
@@ -448,24 +433,7 @@ def get_conversations(username):
     
     result = [{"user": r[0], "latest_activity": r[1], "email": r[2], "phone": r[3], "latest_data": r[4]} for r in rows if r[0]]
     
-    # 🔹 Fetch groups the user belongs to
-    cur.execute("""
-        SELECT g.id, g.name, 
-               (SELECT expiry_time FROM secure_data WHERE receiver = CAST(g.id AS TEXT) ORDER BY id DESC LIMIT 1) as latest_activity,
-               (SELECT data FROM secure_data WHERE receiver = CAST(g.id AS TEXT) ORDER BY id DESC LIMIT 1) as latest_data
-        FROM groups g
-        JOIN group_members gm ON g.id = gm.group_id
-        WHERE LOWER(gm.username) = LOWER(%s)
-    """, (username,))
-    
-    group_rows = cur.fetchall()
-    for gr in group_rows:
-        result.append({
-            "user": f"GROUP:{gr[0]}:{gr[1]}", # Special prefix for groups
-            "latest_activity": gr[2],
-            "latest_data": gr[3],
-            "is_group": True
-        })
+
 
     cur.close()
     conn.close()
@@ -473,35 +441,7 @@ def get_conversations(username):
 
 @app.route('/create_group', methods=['POST'])
 def create_group():
-    data = request.json or {}
-    name = data.get('name')
-    creator = data.get('creator')
-    members = data.get('members', []) # List of usernames
-
-    if not name or not creator:
-        return jsonify({"error": "Missing fields"}), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("INSERT INTO groups (name, creator) VALUES (%s, %s) RETURNING id", (name, creator))
-        group_id = cur.fetchone()[0]
-        
-        # Add creator as member
-        if creator not in members:
-            members.append(creator)
-            
-        for member in members:
-            cur.execute("INSERT INTO group_members (group_id, username) VALUES (%s, %s)", (group_id, member.strip().lower()))
-            
-        conn.commit()
-        return jsonify({"message": "Group created", "group_id": group_id})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
+    return jsonify({"error": "Groups functionality has been removed."}), 400
 
 @app.route('/resolve_user/<identifier>')
 def resolve_user(identifier):
@@ -525,10 +465,6 @@ def resolve_user(identifier):
             "phone": user[2]
         })
     else:
-        # Check if it's a group ID
-        if identifier.upper().startswith("GROUP:"):
-            return jsonify({"username": identifier.upper(), "is_group": True})
-        
         # If user doesn't exist, block chat creation
         return jsonify({"error": "User is not registered on the server"}), 404
 
@@ -551,21 +487,12 @@ def get_messages(user1, user2):
     """, (user1, user2))
     conn.commit()
 
-    # 🔹 Handle Group Messages
-    if user2.startswith("GROUP:"):
-        group_id = user2.split(":")[1]
-        cur.execute("""
-            SELECT data, sender, receiver, id FROM secure_data
-            WHERE receiver = %s
-            ORDER BY id ASC
-        """, (group_id,))
-    else:
-        # 🔹 Handle 1-to-1 Messages
-        cur.execute("""
-            SELECT data, sender, receiver, id FROM secure_data
-            WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
-            ORDER BY id ASC
-        """, (user1, user2, user2, user1))
+    # 🔹 Handle 1-to-1 Messages
+    cur.execute("""
+        SELECT data, sender, receiver, id FROM secure_data
+        WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+        ORDER BY id ASC
+    """, (user1, user2, user2, user1))
 
     rows = cur.fetchall()
     cur.close()
@@ -579,14 +506,10 @@ def delete_chat(user1, user2):
     conn = get_db()
     cur = conn.cursor()
     try:
-        if user2.startswith("GROUP:"):
-            group_id = user2.split(":")[1]
-            cur.execute("DELETE FROM secure_data WHERE receiver = %s", (group_id,))
-        else:
-            cur.execute("""
-                DELETE FROM secure_data 
-                WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
-            """, (user1, user2, user2, user1))
+        cur.execute("""
+            DELETE FROM secure_data 
+            WHERE (sender = %s AND receiver = %s) OR (sender = %s AND receiver = %s)
+        """, (user1, user2, user2, user1))
         conn.commit()
         return jsonify({"message": "Chat wiped permanently."}), 200
     except Exception as e:
@@ -675,10 +598,7 @@ def save_message_to_db(sender_uid, receiver_uid, payload, ttl_seconds):
         conn = get_db()
         curr = conn.cursor()
         
-        # 🔹 If it's a group message, extract just the ID for the database 'receiver' column
         db_receiver = receiver_uid
-        if receiver_uid.startswith("GROUP:"):
-            db_receiver = receiver_uid.split(":")[1]
 
         # 🔹 Offload dynamic database timers purely to Postgres safely using integer multiplication
         curr.execute(
@@ -702,24 +622,7 @@ def handle_join(data):
         join_room(uid)
         print(f"[Socket] User {uid} securely joined real-time socket room.")
         
-        # 🔹 Also join all group rooms this user belongs to
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT g.id, g.name 
-                FROM groups g 
-                JOIN group_members gm ON g.id = gm.group_id 
-                WHERE LOWER(gm.username) = LOWER(%s)
-            """, (uid,))
-            groups = cur.fetchall()
-            for gid, gname in groups:
-                room_name = f"GROUP:{gid}:{gname}"
-                join_room(room_name)
-                print(f"[Socket] User {uid} joined group room: {room_name}")
-            cur.close()
-            conn.close()
-        except: pass
+
 
 @socketio.on('send_message')
 def handle_message(data):
@@ -744,19 +647,10 @@ def handle_message(data):
                 cur = conn.cursor()
                 
                 tokens = []
-                if receiver_uid.startswith("GROUP:"):
-                    gid = receiver_uid.split(":")[1]
-                    cur.execute("""
-                        SELECT push_token FROM users u 
-                        JOIN group_members gm ON u.username = gm.username 
-                        WHERE gm.group_id = %s AND LOWER(u.username) != LOWER(%s)
-                    """, (gid, sender_uid))
-                    tokens = [r[0] for r in cur.fetchall() if r[0]]
-                else:
-                    cur.execute("SELECT push_token FROM users WHERE username=%s", (receiver_uid,))
-                    user_row = cur.fetchone()
-                    if user_row and user_row[0]:
-                        tokens = [user_row[0]]
+                cur.execute("SELECT push_token FROM users WHERE username=%s", (receiver_uid,))
+                user_row = cur.fetchone()
+                if user_row and user_row[0]:
+                    tokens = [user_row[0]]
                 
                 cur.close()
                 conn.close()
@@ -767,8 +661,8 @@ def handle_message(data):
                     message = {
                         'to': push_token,
                         'sound': 'default',
-                        'title': f"{display_sender}" if not receiver_uid.startswith("GROUP:") else f"{receiver_uid.split(':')[2]}",
-                        'body': f"Sent you a secure message. Tap to decrypt." if not receiver_uid.startswith("GROUP:") else f"{display_sender}: New message",
+                        'title': f"{display_sender}",
+                        'body': f"Sent you a secure message. Tap to decrypt.",
                         'data': {'sender_uid': sender_uid, 'receiver_uid': receiver_uid} # Deep linking context
                     }
                     req = urllib.request.Request(
