@@ -520,8 +520,9 @@ def delete_chat(user1, user2):
 @app.route('/delete_account', methods=['DELETE'])
 def delete_account():
     data = request.json or {}
-    username = data.get('username')
-    password = data.get('password')
+    # Strip whitespace to prevent accidental mismatch
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
 
     if not username or not password:
         return jsonify({"error": "Missing fields"}), 400
@@ -530,12 +531,26 @@ def delete_account():
     cur = conn.cursor()
 
     try:
-        cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
-        if not cur.fetchone():
-            return jsonify({"error": "Unauthorized"}), 401
+        # Match against username, email, or phone
+        cur.execute("""
+            SELECT id, password, username FROM users 
+            WHERE LOWER(username)=LOWER(%s) OR LOWER(email)=LOWER(%s) OR LOWER(phone)=LOWER(%s)
+        """, (username, username, username))
+        user = cur.fetchone()
 
-        cur.execute("DELETE FROM secure_data WHERE sender=%s OR receiver=%s", (username, username))
-        cur.execute("DELETE FROM users WHERE username=%s AND password=%s", (username, password))
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        user_id, stored_password, real_username = user
+
+        if stored_password is not None and stored_password.strip() != "":
+            if stored_password.strip() != password:
+                return jsonify({"error": "Unauthorized: Incorrect password"}), 401
+        else:
+            return jsonify({"error": "Please set a password in Edit Profile before deleting your account."}), 401
+
+        cur.execute("DELETE FROM secure_data WHERE LOWER(sender)=LOWER(%s) OR LOWER(receiver)=LOWER(%s)", (real_username, real_username))
+        cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
         conn.commit()
         return jsonify({"message": "Account sanitized and destroyed."}), 200
     except Exception as e:
